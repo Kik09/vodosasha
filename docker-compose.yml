@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aquadoks_db
+    environment:
+      POSTGRES_DB: aquadoks
+      POSTGRES_USER: aquadoks_user
+      POSTGRES_PASSWORD: aquadoks_pass_change_in_prod
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aquadoks_user -d aquadoks"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
