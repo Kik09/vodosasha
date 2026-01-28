@@ -83,12 +83,38 @@ CREATE TABLE knowledge_base (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Chat sessions (interaction logs)
+CREATE TABLE chat_sessions (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+    channel VARCHAR(50) NOT NULL, -- telegram, web, max
+    external_chat_id VARCHAR(100), -- telegram user_id, etc
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ended_at TIMESTAMP
+);
+
+-- Chat messages
+CREATE TABLE chat_messages (
+    id SERIAL PRIMARY KEY,
+    session_id INTEGER REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL, -- user, assistant, tool, system
+    content TEXT,
+    tool_name VARCHAR(100), -- for tool calls
+    tool_args JSONB, -- tool call arguments
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes
 CREATE INDEX idx_orders_customer_id ON orders(customer_id);
 CREATE INDEX idx_orders_status ON orders(status);
 CREATE INDEX idx_order_items_order_id ON order_items(order_id);
 CREATE INDEX idx_inventory_product_id ON inventory(product_id);
 CREATE INDEX idx_knowledge_base_embedding ON knowledge_base USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX idx_chat_sessions_customer_id ON chat_sessions(customer_id);
+CREATE INDEX idx_chat_sessions_channel ON chat_sessions(channel);
+CREATE INDEX idx_chat_sessions_external_chat_id ON chat_sessions(external_chat_id);
+CREATE INDEX idx_chat_messages_session_id ON chat_messages(session_id);
+CREATE INDEX idx_chat_messages_created_at ON chat_messages(created_at);
 
 -- Insert initial products
 INSERT INTO products (sku, name, volume, pack_size, price_per_pack, description) VALUES
