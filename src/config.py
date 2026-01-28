@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     yandex_api_key: str = ""
     yandex_folder_id: str = ""
 
+    # Admin bot
+    admin_bot_token: str = ""
+    admin_bot_password: str = ""
+
     # Robokassa
     robokassa_merchant_login: str = ""
     robokassa_password_1: str = ""

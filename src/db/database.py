@@ -125,5 +125,23 @@ class Database:
             # Return in chronological order (oldest first)
             return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
+    async def execute_raw(self, sql: str):
+        """Execute raw SQL query and return results.
+
+        WARNING: Only use with trusted input (admin bot with authentication).
+        """
+        async with self.pool.acquire() as conn:
+            # Determine query type
+            sql_upper = sql.strip().upper()
+
+            if sql_upper.startswith("SELECT") or sql_upper.startswith("WITH"):
+                # SELECT query - return rows
+                rows = await conn.fetch(sql)
+                return rows
+            else:
+                # INSERT/UPDATE/DELETE - execute and return status
+                result = await conn.execute(sql)
+                return result
+
 
 db = Database()
