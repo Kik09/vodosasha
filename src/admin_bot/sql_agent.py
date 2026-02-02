@@ -177,7 +177,14 @@ class SQLAgent:
                 sql = sql.split("\n", 1)[1] if "\n" in sql else sql[3:]
             if sql.endswith("```"):
                 sql = sql[:-3]
-            return sql.strip()
+            sql = sql.strip()
+
+            # Валидация: проверить что это SQL
+            sql_keywords = ('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'WITH', 'CREATE', 'ALTER')
+            if not sql.upper().startswith(sql_keywords):
+                raise ValueError(f"LLM вернул не SQL: {sql[:100]}...")
+
+            return sql
         except httpx.HTTPStatusError as e:
             logger.error(f"Yandex GPT HTTP error: {e.response.status_code} - {e.response.text}")
             raise

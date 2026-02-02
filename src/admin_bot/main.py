@@ -3,6 +3,7 @@ import logging
 import sys
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
 
 from src.config import settings
 from src.db.database import db
@@ -44,6 +45,20 @@ async def main():
     bot = Bot(token=settings.admin_bot_token)
     dp = Dispatcher()
     dp.include_router(router)
+
+    # Set bot commands (blue menu button)
+    commands = [
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="orders", description="Список заказов"),
+        BotCommand(command="stock", description="Состояние склада"),
+        BotCommand(command="clients", description="База клиентов"),
+        BotCommand(command="schema", description="Схема БД"),
+        BotCommand(command="prompt", description="Промпт sales-бота"),
+        BotCommand(command="setprompt", description="Обновить промпт"),
+        BotCommand(command="logout", description="Выйти"),
+    ]
+    await bot.set_my_commands(commands)
+    logger.info("Bot commands registered")
 
     try:
         logger.info("Starting polling...")

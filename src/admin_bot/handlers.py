@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 
 from aiogram import Router
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 
 from src.config import settings
@@ -17,13 +17,49 @@ AGENT_PROMPT_PATH = Path(__file__).parent.parent.parent / "agent_prompt.md"
 # In-memory storage for authenticated users
 authenticated_users: set[int] = set()
 
-# Users waiting to input new prompt
-awaiting_prompt: set[int] = set()
+# Main keyboard
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📦 Заказы"), KeyboardButton(text="📊 Склад")],
+        [KeyboardButton(text="👥 Клиенты"), KeyboardButton(text="📋 Схема БД")],
+    ],
+    resize_keyboard=True,
+)
 
 
 def is_authenticated(user_id: int) -> bool:
     """Check if user is authenticated."""
     return user_id in authenticated_users
+
+
+async def execute_and_format(sql: str, message: Message) -> None:
+    """Execute SQL and send formatted result."""
+    try:
+        result = await db.execute_raw(sql)
+        if not result:
+            await message.answer("Нет данных.")
+            return
+
+        lines = []
+        if hasattr(result[0], 'keys'):
+            cols = list(result[0].keys())
+            lines.append(" | ".join(cols))
+            lines.append("-" * len(lines[0]))
+
+        for row in result[:50]:
+            vals = [str(v) if v is not None else "-" for v in (row.values() if hasattr(row, 'values') else row)]
+            lines.append(" | ".join(vals))
+
+        if len(result) > 50:
+            lines.append(f"\n... ещё {len(result) - 50}")
+
+        output = "\n".join(lines)
+        if len(output) > 4000:
+            output = output[:4000] + "\n... (обрезано)"
+
+        await message.answer(f"```\n{output}\n```", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
 
 
 @router.message(Command("start"))
@@ -34,17 +70,16 @@ async def handle_start(message: Message):
     if is_authenticated(user_id):
         await message.answer(
             "AQUADOKS Admin Bot\n\n"
-            "Отправь запрос на естественном языке, я сгенерирую и выполню SQL.\n\n"
-            "Примеры:\n"
-            "- покажи все товары\n"
-            "- сколько заказов за сегодня\n"
-            "- топ 5 клиентов по сумме\n"
-            "- обнови остаток 0.5л на 50 упаковок\n\n"
+            "Используйте кнопки или отправьте запрос на естественном языке.\n\n"
             "Команды:\n"
-            "/schema - показать схему БД\n"
-            "/prompt - показать системный промпт sales-бота\n"
-            "/setprompt - обновить системный промпт\n"
-            "/logout - выйти"
+            "/orders - заказы\n"
+            "/stock - склад\n"
+            "/clients - клиенты\n"
+            "/schema - схема БД\n"
+            "/prompt - промпт sales-бота\n"
+            "/setprompt - обновить промпт\n"
+            "/logout - выйти",
+            reply_markup=main_keyboard,
         )
     else:
         await message.answer("Введите пароль для доступа:")
@@ -110,44 +145,99 @@ async def handle_prompt(message: Message):
 
 @router.message(Command("setprompt"))
 async def handle_setprompt(message: Message):
-    """Set new agent prompt."""
+    """Set new agent prompt - show instructions."""
     user_id = message.from_user.id
 
     if not is_authenticated(user_id):
         await message.answer("Введите пароль для доступа:")
         return
 
-    # Check if prompt text is provided with command
-    command_text = message.text or ""
-    parts = command_text.split(maxsplit=1)
+    await message.answer(
+        "Чтобы обновить промпт, отправьте текстовый файл (.txt или .md).\n\n"
+        "Файл заменит текущий agent_prompt.md."
+    )
 
-    if len(parts) > 1:
-        # Prompt text provided inline
-        new_prompt = parts[1]
+
+@router.message(Command("orders"))
+async def handle_orders(message: Message):
+    """Show recent orders."""
+    if not is_authenticated(message.from_user.id):
+        await message.answer("Введите пароль для доступа:")
+        return
+
+    sql = """
+        SELECT o.id, c.name, o.status, o.final_amount, o.created_at::date
+        FROM orders o
+        LEFT JOIN customers c ON o.customer_id = c.id
+        ORDER BY o.created_at DESC
+        LIMIT 20
+    """
+    await execute_and_format(sql, message)
+
+
+@router.message(Command("stock"))
+async def handle_stock(message: Message):
+    """Show inventory status."""
+    if not is_authenticated(message.from_user.id):
+        await message.answer("Введите пароль для доступа:")
+        return
+
+    sql = """
+        SELECT p.sku, p.name, p.price_per_pack, i.stock_packs, i.reserved_packs,
+               (i.stock_packs - i.reserved_packs) as available
+        FROM products p
+        JOIN inventory i ON p.id = i.product_id
+        ORDER BY p.id
+    """
+    await execute_and_format(sql, message)
+
+
+@router.message(Command("clients"))
+async def handle_clients(message: Message):
+    """Show customers."""
+    if not is_authenticated(message.from_user.id):
+        await message.answer("Введите пароль для доступа:")
+        return
+
+    sql = """
+        SELECT c.id, c.name, c.phone, c.city, COUNT(o.id) as orders_count
+        FROM customers c
+        LEFT JOIN orders o ON c.id = o.customer_id
+        GROUP BY c.id
+        ORDER BY c.created_at DESC
+        LIMIT 30
+    """
+    await execute_and_format(sql, message)
+
+
+@router.message(lambda m: m.document is not None)
+async def handle_document(message: Message):
+    """Handle file upload for prompt update."""
+    user_id = message.from_user.id
+
+    if not is_authenticated(user_id):
+        await message.answer("Введите пароль для доступа:")
+        return
+
+    doc = message.document
+    if not doc.file_name.endswith(('.txt', '.md')):
+        await message.answer("Поддерживаются только .txt и .md файлы.")
+        return
+
+    try:
+        file = await message.bot.get_file(doc.file_id)
+        file_bytes = await message.bot.download_file(file.file_path)
+        new_prompt = file_bytes.read().decode('utf-8')
+
         AGENT_PROMPT_PATH.write_text(new_prompt, encoding="utf-8")
-        logger.info(f"Agent prompt updated by user {user_id} ({len(new_prompt)} chars)")
+        logger.info(f"Agent prompt updated by user {user_id} via file ({len(new_prompt)} chars)")
         await message.answer(
             f"Промпт обновлён ({len(new_prompt)} символов).\n"
             "Sales-бот подхватит изменения автоматически."
         )
-    else:
-        # Enter prompt editing mode
-        awaiting_prompt.add(user_id)
-        await message.answer(
-            "Отправьте новый текст промпта следующим сообщением.\n"
-            "Отправьте /cancel для отмены."
-        )
-
-
-@router.message(Command("cancel"))
-async def handle_cancel(message: Message):
-    """Cancel current operation."""
-    user_id = message.from_user.id
-    if user_id in awaiting_prompt:
-        awaiting_prompt.discard(user_id)
-        await message.answer("Операция отменена.")
-    else:
-        await message.answer("Нет активной операции.")
+    except Exception as e:
+        logger.error(f"Error updating prompt from file: {e}")
+        await message.answer(f"Ошибка: {e}")
 
 
 @router.message()
@@ -167,28 +257,23 @@ async def handle_message(message: Message):
             logger.info(f"User {user_id} authenticated successfully")
             await message.answer(
                 "Доступ разрешён.\n\n"
-                "Отправь запрос на естественном языке, я сгенерирую и выполню SQL.\n\n"
-                "Примеры:\n"
-                "- покажи все товары\n"
-                "- сколько заказов за сегодня\n"
-                "- топ 5 клиентов по сумме"
+                "Используйте кнопки или отправьте запрос на естественном языке.",
+                reply_markup=main_keyboard,
             )
         else:
             logger.warning(f"Failed auth attempt from user {user_id}")
             await message.answer("Неверный пароль.")
         return
 
-    # Check if user is in prompt editing mode
-    if user_id in awaiting_prompt:
-        awaiting_prompt.discard(user_id)
-        new_prompt = message.text  # Use raw text, not stripped
-        AGENT_PROMPT_PATH.write_text(new_prompt, encoding="utf-8")
-        logger.info(f"Agent prompt updated by user {user_id} ({len(new_prompt)} chars)")
-        await message.answer(
-            f"Промпт обновлён ({len(new_prompt)} символов).\n"
-            "Sales-бот подхватит изменения автоматически."
-        )
-        return
+    # Handle keyboard buttons
+    if text == "📦 Заказы":
+        return await handle_orders(message)
+    elif text == "📊 Склад":
+        return await handle_stock(message)
+    elif text == "👥 Клиенты":
+        return await handle_clients(message)
+    elif text == "📋 Схема БД":
+        return await handle_schema(message)
 
     # User is authenticated - process SQL request
     try:

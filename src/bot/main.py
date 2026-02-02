@@ -9,6 +9,7 @@ from src.config import settings
 from src.db.database import db
 from src.bot.handlers import router
 from src.bot.yandex_gpt import yandex_gpt
+from src.bot.yandex_stt import yandex_stt
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,8 +27,15 @@ async def on_startup():
     await yandex_gpt.init()
     logger.info("Yandex GPT ready")
 
+    logger.info("Initializing Yandex STT...")
+    await yandex_stt.init()
+    logger.info("Yandex STT ready")
+
 
 async def on_shutdown():
+    logger.info("Closing Yandex STT client...")
+    await yandex_stt.close()
+
     logger.info("Closing Yandex GPT client...")
     await yandex_gpt.close()
 

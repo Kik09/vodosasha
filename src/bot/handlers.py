@@ -6,6 +6,7 @@ from aiogram.types import Message
 
 from src.db.database import db
 from src.bot.yandex_gpt import yandex_gpt
+from src.bot.yandex_stt import yandex_stt
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -126,11 +127,43 @@ async def cmd_status(message: Message):
     await db.log_message(session_id, "assistant", f"Показано {len(orders)} заказов")
 
 
+@router.message(lambda m: m.voice is not None)
+async def handle_voice(message: Message):
+    """Handle voice messages - convert to text via Yandex STT."""
+    telegram_id = str(message.from_user.id)
+
+    try:
+        # Download voice file
+        file = await message.bot.get_file(message.voice.file_id)
+        file_bytes = await message.bot.download_file(file.file_path)
+        audio_data = file_bytes.read()
+
+        # Recognize speech
+        user_text = await yandex_stt.recognize(audio_data)
+
+        if not user_text:
+            await message.answer("Не удалось распознать речь. Попробуйте ещё раз.")
+            return
+
+        logger.info(f"[STT] tg_id={telegram_id} | {user_text}")
+
+        # Process as regular message
+        await handle_text_message(message, user_text)
+
+    except Exception as e:
+        logger.error(f"[ERR] tg_id={telegram_id} | STT error: {e}")
+        await message.answer("Ошибка распознавания речи. Попробуйте написать текстом.")
+
+
 @router.message()
 async def handle_message(message: Message):
     """Handle all other messages - send to Yandex GPT."""
+    await handle_text_message(message, message.text or "")
+
+
+async def handle_text_message(message: Message, user_text: str):
+    """Process text message through Yandex GPT."""
     telegram_id = str(message.from_user.id)
-    user_text = message.text or ""
 
     # Get customer info for logging
     customer = await db.get_customer_by_telegram_id(telegram_id)
@@ -158,7 +191,7 @@ async def handle_message(message: Message):
             else f"[GPT] tg_id={telegram_id} | {response}"
         )
 
-        await message.answer(response)
+        await message.answer(response, parse_mode=None)
         await db.log_message(session_id, "assistant", response)
 
     except Exception as e:

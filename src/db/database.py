@@ -125,7 +125,7 @@ class Database:
             # Return in chronological order (oldest first)
             return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
-    async def execute_raw(self, sql: str):
+    async def execute_raw(self, sql: str, *args):
         """Execute raw SQL query and return results.
 
         WARNING: Only use with trusted input (admin bot with authentication).
@@ -136,12 +136,118 @@ class Database:
 
             if sql_upper.startswith("SELECT") or sql_upper.startswith("WITH"):
                 # SELECT query - return rows
-                rows = await conn.fetch(sql)
+                rows = await conn.fetch(sql, *args)
                 return rows
             else:
                 # INSERT/UPDATE/DELETE - execute and return status
-                result = await conn.execute(sql)
+                result = await conn.execute(sql, *args)
                 return result
+
+    async def get_or_create_customer(
+        self, name: str, phone: str, city: str
+    ) -> int:
+        """Get existing customer by phone or create new one."""
+        async with self.pool.acquire() as conn:
+            # Try to find by phone
+            row = await conn.fetchrow(
+                "SELECT id FROM customers WHERE phone = $1",
+                phone,
+            )
+            if row:
+                return row["id"]
+
+            # Create new customer
+            row = await conn.fetchrow(
+                """
+                INSERT INTO customers (name, phone, city)
+                VALUES ($1, $2, $3)
+                RETURNING id
+                """,
+                name,
+                phone,
+                city,
+            )
+            return row["id"]
+
+    async def create_order(
+        self,
+        customer_id: int,
+        channel: str,
+        city: str,
+        address: str,
+        total_amount: int,
+        discount_amount: int,
+        final_amount: int,
+        items: list[dict],
+    ) -> int:
+        """Create order with items in a transaction."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # Reserve stock for each item
+                for item in items:
+                    result = await conn.fetchrow(
+                        """
+                        UPDATE inventory
+                        SET reserved_packs = reserved_packs + $2
+                        WHERE product_id = $1
+                          AND stock_packs - reserved_packs >= $2
+                        RETURNING id
+                        """,
+                        item["product_id"],
+                        item["qty"],
+                    )
+                    if not result:
+                        raise ValueError(f"Недостаточно товара {item['sku']}")
+
+                # Create order
+                order_row = await conn.fetchrow(
+                    """
+                    INSERT INTO orders (
+                        customer_id, channel, city, address,
+                        total_amount, discount_amount, final_amount
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    RETURNING id
+                    """,
+                    customer_id,
+                    channel,
+                    city,
+                    address,
+                    total_amount,
+                    discount_amount,
+                    final_amount,
+                )
+                order_id = order_row["id"]
+
+                # Create order items
+                for item in items:
+                    await conn.execute(
+                        """
+                        INSERT INTO order_items (
+                            order_id, product_id, sku, qty_packs, price_per_pack, subtotal
+                        ) VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        order_id,
+                        item["product_id"],
+                        item["sku"],
+                        item["qty"],
+                        item["price"],
+                        item["subtotal"],
+                    )
+
+                # Deduct from stock
+                for item in items:
+                    await conn.execute(
+                        """
+                        UPDATE inventory
+                        SET stock_packs = stock_packs - $2,
+                            reserved_packs = reserved_packs - $2
+                        WHERE product_id = $1
+                        """,
+                        item["product_id"],
+                        item["qty"],
+                    )
+
+                return order_id
 
 
 db = Database()
